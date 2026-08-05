@@ -70,19 +70,16 @@ $SSH "nohup bash -c '
   export PATH=/app/ComfyUI_env/bin:\$PATH
   export HF_HOME=/workspace/.hf/home HF_XET_HIGH_PERFORMANCE=0
   mkdir -p $DEST_DIR
-  python3 -m pip -q install -U huggingface_hub 2>&1 | tail -2
-  python3 - <<PYEOF
+  python3 -m pip -q install -U huggingface_hub 2>&1 | tail -1
+  cat > /tmp/dl_$TAG.py <<\"PYEOF\"
+import shutil, sys
 from huggingface_hub import hf_hub_download
-import shutil
-p = hf_hub_download(
-    repo_id="$REPO",
-    filename="$SRC",
-    repo_type="model",
-    local_dir="$STAGE",
-)
-shutil.move(p, "$DEST_DIR/$FNAME")
-print("MODEL_DOWNLOAD_DONE")
+repo, src, stage, dest = sys.argv[1:5]
+p = hf_hub_download(repo_id=repo, filename=src, repo_type=\"model\", local_dir=stage)
+shutil.move(p, dest)
+print(\"MODEL_DOWNLOAD_DONE\")
 PYEOF
+  python3 /tmp/dl_$TAG.py $REPO $SRC $STAGE $DEST_DIR/$FNAME
   rm -rf $STAGE
 ' > $LOG 2>&1 & echo ok" > /dev/null
 
@@ -97,7 +94,7 @@ while true; do
     echo "Refresh the ComfyUI browser tab to see the new model in the dropdown."
     exit 0
   fi
-  if $SSH "grep -qiE 'error|traceback|No such file' $LOG 2>/dev/null"; then
+  if $SSH "grep -qiE 'Traceback|SyntaxError|HTTPError|No such file|Errno' $LOG 2>/dev/null"; then
     echo
     echo "Download failed:" >&2
     $SSH "tail -20 $LOG" >&2
