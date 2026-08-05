@@ -13,6 +13,7 @@ import http.server
 import json
 import os
 import queue as _queue
+import re
 import signal
 import socketserver
 import subprocess
@@ -21,7 +22,43 @@ import time
 import uuid
 from urllib.parse import parse_qs, urlparse
 
+import requests
+
 import run_job
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+# Log lines worth surfacing: sampler progress, model loads, errors.
+LOG_KEEP_RE = re.compile(
+    r"(\d+%\|)|(\bit/s\b)|(\bs/it\b)|Requested to load|prepared for dynamic VRAM"
+    r"|Prompt executed|got prompt|error|Error|ERROR|Traceback|out of memory",
+)
+
+
+def fetch_pod_logs(limit=40):
+    """Pull recent ComfyUI log lines off the pod, filtered to the interesting ones."""
+    base = run_job.POD_URL
+    if not base:
+        return {"lines": [], "error": "COMFYUI_POD_URL not set"}
+    try:
+        r = requests.get(f"{base}/internal/logs/raw", timeout=10)
+        r.raise_for_status()
+        entries = r.json().get("entries", [])
+    except Exception as e:
+        return {"lines": [], "error": f"{type(e).__name__}: {e}"}
+
+    out = []
+    for e in entries:
+        msg = ANSI_RE.sub("", e.get("m", "")).rstrip()
+        if not msg or not LOG_KEEP_RE.search(msg):
+            continue
+        # tqdm progress bars rewrite one line with \r — keep only the final state
+        if "\r" in msg:
+            msg = msg.split("\r")[-1].strip()
+        if not msg:
+            continue
+        out.append({"t": (e.get("t") or "")[11:19], "m": msg[:300]})
+    return {"lines": out[-limit:], "error": None}
 
 PORT = 8000
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "generated")
@@ -479,6 +516,20 @@ HTML = """<!doctype html>
     <div id="queue-list"></div>
   </div>
 
+  <!-- ── Pod logs ── -->
+  <div class="queue-section">
+    <div class="queue-header">
+      <h2>Pod log</h2>
+      <button class="history-toggle" id="log-toggle" type="button">Show &#x25BE;</button>
+      <span id="log-hint" style="font-size:.72em;color:#333"></span>
+    </div>
+    <div id="log-panel" class="history-panel" style="display:none">
+      <pre id="log-body" style="margin:0;padding:.8em 1em;max-height:280px;overflow-y:auto;
+        font-family:ui-monospace,'SF Mono',monospace;font-size:.72em;line-height:1.5;
+        color:#666;white-space:pre-wrap;word-break:break-word;">loading…</pre>
+    </div>
+  </div>
+
 <script>
 const $ = id => document.getElementById(id);
 const STAGED_KEY = 'staged_v1';
@@ -690,6 +741,42 @@ $('history-toggle').addEventListener('click', () => {
   $('history-toggle').textContent = opening ? 'History ▴' : 'History ▾';
   if (opening) loadPastPrompts();
 });
+
+// ── Pod log ──
+let logOpen = false;
+
+async function loadLogs() {
+  if (!logOpen) return;
+  try {
+    const d = await fetch('/pod_logs').then(r => r.json());
+    const body = $('log-body');
+    if (d.error) {
+      body.textContent = 'Cannot reach pod: ' + d.error;
+      $('log-hint').textContent = '';
+      return;
+    }
+    if (!d.lines.length) {
+      body.textContent = 'No activity yet.';
+      return;
+    }
+    // stick to bottom only if already scrolled there
+    const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 30;
+    body.textContent = d.lines.map(l => `${l.t}  ${l.m}`).join('\\n');
+    if (atBottom) body.scrollTop = body.scrollHeight;
+    const last = d.lines[d.lines.length - 1].m;
+    const pct = last.match(/(\\d+)%\\|/);
+    $('log-hint').textContent = pct ? `sampling ${pct[1]}%` : '';
+  } catch {}
+}
+
+$('log-toggle').addEventListener('click', () => {
+  logOpen = !logOpen;
+  $('log-panel').style.display = logOpen ? 'block' : 'none';
+  $('log-toggle').textContent = logOpen ? 'Hide ▴' : 'Show ▾';
+  if (logOpen) loadLogs();
+});
+
+setInterval(loadLogs, 4000);
 </script>
 </body>
 </html>
@@ -770,6 +857,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if parsed.path == "/past_prompts":
             self._json(200, {"prompts": read_past_prompts()})
+            return
+
+        if parsed.path == "/pod_logs":
+            self._json(200, fetch_pod_logs())
             return
 
         if parsed.path == "/":
