@@ -123,29 +123,51 @@ Stopping `serve.py` (Ctrl-C) does **not** stop the pod. Only the button or
 
 ## Writing prompts
 
-MiniMax H3 generates **video and audio together**, so describe both. One block
-covering look, shots, camera motion, and sound:
+MiniMax H3 expects a **structured** prompt, not loose prose. The official
+guides are in `docs/`:
 
+| Guide | Use for |
+|---|---|
+| `docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md` | T2VA / **I2VA** / FL2VA / L2VA — what this pipeline uses |
+| `docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md` | Full-reference mode (the R2V workflow) |
+
+This pipeline is **I2VA** (one image = first frame). That format is:
+
+```text
+For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
+
+integrated_multimodal_description: [Shot 1] Live-action, cinematic, <the subject
+in Picture 1, preserving appearance/clothing/position>. The camera pushes in with
+small amplitude at slow speed as <action>. The woman with a warm, husky voice (S1)
+says: <d>[English] Your line here.</d> [Shot 2] At 00:06.500, the camera cuts to
+<new information>.
+
+overall_soundscape: <ambient + physical action sounds, 1-4 sentences. No dialogue or music here.>
+
+non_diegetic_music: <score only the audience hears — instrumentation, tempo, dynamics. Or N/A.>
 ```
-Sunlit beach portrait, natural daylight, warm summer tones.
 
-SHOT 1: Opens exactly on the input image; she turns her head slowly toward
-camera and smiles, hair moving in the sea breeze.
+Rules that matter most:
 
-SHOT 2: Cut to a wider angle, palm fronds swaying behind her.
+- **First line is the instruction**, then a blank line, then the three fields.
+- **`[Shot 1]` opens with the style** (`Live-action, cinematic`, `vintage film`,
+  `3D CG`, …) and the initial composition — derive it from your input image.
+- **Shot 1 gets no timestamp.** Later shots start with a strictly increasing
+  cut time inside the duration: `[Shot 2] At 00:06.500, the camera cuts to…`
+- **Camera motion = type + amplitude + speed**, written as natural prose:
+  `pushes in with small amplitude at slow speed`. Types include Push In/Pull
+  Out, Pan, Truck, Tilt, Pedestal, Arc Shot, Tracking Shot, Static Shot, POV.
+- **Dialogue:** speaker ID `(S1)` outside the tag, only the language tag and
+  the words inside: `(S1) says: <d>[English] What's for lunch?</d>`
+  Establish voice qualities (pitch, timbre, rate) on first appearance.
+- **On-screen text** goes in double quotes, verbatim.
+- **Keep the three sections separate** — don't put dialogue or diegetic music
+  in `overall_soundscape`.
 
-Audio: gentle ocean waves, distant beach chatter, soft wind.
-```
+**Duration note:** frame counts snap to a 17-frame grid, so `-d 10` yields 243
+frames = **10.125s**. Keep cut times inside the real duration.
 
-Points that matter:
-- **Always describe the audio** — it's the model's main differentiator.
-- **Shot 1 should match your input image** (it becomes the first frame).
-- **Timeline markers work too:** `[0s-1s]`, `[1s-2.5s]` instead of shot labels.
-- **Put negatives inline:** "hard cuts only, no dissolves", "do not misspell text".
-- There is **no separate negative-prompt field** (unlike the LTX pipeline).
-
-One image is enough — it becomes the first frame and the model generates all
-motion from there.
+Ready-made examples live in `prompts/`.
 
 ---
 
