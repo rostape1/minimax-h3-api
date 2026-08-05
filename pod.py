@@ -71,6 +71,7 @@ def find_pod():
 def pod_details(pod_id):
     q = """query { pod(input: {podId: "%s"}) {
       id name desiredStatus
+      machine { gpuDisplayName }
       runtime { uptimeInSeconds ports { ip privatePort publicPort type isIpPublic } }
     } }""" % pod_id
     return gql(q)["pod"]

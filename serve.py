@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
+import pod as pod_api
 import run_job
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -59,6 +60,48 @@ def fetch_pod_logs(limit=40):
             continue
         out.append({"t": (e.get("t") or "")[11:19], "m": msg[:300]})
     return {"lines": out[-limit:], "error": None}
+
+
+# GPU $/hr by card, for the running-cost readout. Falls back to None if unknown.
+GPU_HOURLY = {
+    "NVIDIA GeForce RTX 5090": 0.99,
+    "NVIDIA A100-SXM4-80GB": 1.59,
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition": 2.09,
+    "NVIDIA RTX PRO 6000 Blackwell Workstation Edition": 1.89,
+}
+
+# Cache pod state briefly — the UI polls often, the RunPod API shouldn't.
+_pod_cache = {"at": 0.0, "data": None}
+_pod_lock = threading.Lock()
+
+
+def get_pod_info(max_age=15):
+    with _pod_lock:
+        if _pod_cache["data"] and time.time() - _pod_cache["at"] < max_age:
+            return _pod_cache["data"]
+    try:
+        p = pod_api.find_pod()
+        if not p:
+            info = {"running": False}
+        else:
+            d = pod_api.pod_details(p["id"])
+            rt = d.get("runtime") or {}
+            up = rt.get("uptimeInSeconds") or 0
+            gpu = (d.get("machine") or {}).get("gpuDisplayName")
+            rate = GPU_HOURLY.get(pod_api.DEFAULT_GPU)
+            info = {
+                "running": True,
+                "id": d["id"],
+                "uptime": up,
+                "gpu": gpu,
+                "cost": round(rate * up / 3600, 2) if rate else None,
+                "rate": rate,
+            }
+    except Exception as e:
+        info = {"running": False, "error": f"{type(e).__name__}: {e}"}
+    with _pod_lock:
+        _pod_cache.update(at=time.time(), data=info)
+    return info
 
 PORT = 8000
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "generated")
@@ -450,6 +493,18 @@ HTML = """<!doctype html>
 <body>
   <h1>MiniMax H3 &mdash; Image to Video</h1>
 
+  <div id="pod-bar" style="display:flex;align-items:center;gap:.8em;flex-wrap:wrap;
+       padding:.65em 1em;margin:-1.5em 0 2em;border-radius:8px;
+       background:#0e0e0e;border:1px solid #1e1e1e;font-size:.8em;">
+    <span id="pod-dot" style="width:7px;height:7px;border-radius:50%;background:#333;flex-shrink:0"></span>
+    <span id="pod-state" style="color:#555">checking pod…</span>
+    <span id="pod-uptime" style="color:#444;font-family:ui-monospace,'SF Mono',monospace"></span>
+    <span id="pod-cost" style="color:#444"></span>
+    <span style="flex:1"></span>
+    <button type="button" id="pod-stop" class="btn btn-sm" style="display:none;
+      background:linear-gradient(135deg,#c0392b,#96281b);box-shadow:none;">Stop pod</button>
+  </div>
+
   <form id="form">
     <div style="display:flex;align-items:center;justify-content:space-between;margin:1.4em 0 .4em">
       <label style="margin:0">Prompt</label>
@@ -777,6 +832,70 @@ $('log-toggle').addEventListener('click', () => {
 });
 
 setInterval(loadLogs, 4000);
+
+// ── Pod status bar ──
+function fmtUptime(s) {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h ? `${h}h ${String(m).padStart(2,'0')}m` : `${m}m ${String(sec).padStart(2,'0')}s`;
+}
+
+let podUp = null, podSyncedAt = 0;
+
+async function loadPodInfo() {
+  try {
+    const d = await fetch('/pod_info').then(r => r.json());
+    if (!d.running) {
+      podUp = null;
+      $('pod-dot').style.background = '#333';
+      $('pod-state').textContent = d.error ? ('pod: ' + d.error) : 'No pod running — generations will fail.';
+      $('pod-state').style.color = '#555';
+      $('pod-uptime').textContent = '';
+      $('pod-cost').textContent = '';
+      $('pod-stop').style.display = 'none';
+      return;
+    }
+    podUp = d.uptime; podSyncedAt = Date.now();
+    $('pod-dot').style.background = '#22c55e';
+    $('pod-state').textContent = d.gpu || 'pod running';
+    $('pod-state').style.color = '#888';
+    $('pod-cost').textContent = d.cost != null ? `~$${d.cost.toFixed(2)} @ $${d.rate}/hr` : '';
+    $('pod-stop').style.display = '';
+    tickUptime();
+  } catch {}
+}
+
+function tickUptime() {
+  if (podUp == null) return;
+  const secs = podUp + Math.floor((Date.now() - podSyncedAt) / 1000);
+  $('pod-uptime').textContent = 'up ' + fmtUptime(secs);
+}
+
+$('pod-stop').addEventListener('click', async () => {
+  const busy = currentJobs.some(j => j.status === 'pending' || j.status === 'running');
+  const msg = busy
+    ? 'A job is still running — stopping the pod will kill it. Stop anyway?'
+    : 'Stop the pod? GPU billing ends; models stay on the volume.';
+  if (!confirm(msg)) return;
+  $('pod-stop').disabled = true;
+  $('pod-stop').textContent = 'Stopping…';
+  try {
+    const r = await fetch('/pod_stop' + (busy ? '?force=1' : ''), { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) {
+      alert('Could not stop pod: ' + (d.error || r.status));
+    }
+  } catch (e) {
+    alert('Could not stop pod: ' + e.message);
+  } finally {
+    $('pod-stop').disabled = false;
+    $('pod-stop').textContent = 'Stop pod';
+    loadPodInfo();
+  }
+});
+
+loadPodInfo();
+setInterval(loadPodInfo, 20000);   // refresh from RunPod API
+setInterval(tickUptime, 1000);     // smooth local clock
 </script>
 </body>
 </html>
@@ -861,6 +980,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if parsed.path == "/pod_logs":
             self._json(200, fetch_pod_logs())
+            return
+
+        if parsed.path == "/pod_info":
+            self._json(200, get_pod_info())
             return
 
         if parsed.path == "/":
@@ -951,6 +1074,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):
+        if self.path.startswith("/pod_stop"):
+            force = "force=1" in urlparse(self.path).query
+            with JOBS_LOCK:
+                busy = [j for j in JOBS.values() if j["status"] in ("pending", "running")]
+            if busy and not force:
+                self._json(409, {"error": f"{len(busy)} job(s) still queued or running"})
+                return
+            try:
+                pod_api.stop()
+                with _pod_lock:
+                    _pod_cache.update(at=0.0, data=None)
+                self._json(200, {"ok": True})
+            except SystemExit as e:
+                self._json(500, {"error": str(e)})
+            except Exception as e:
+                self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            return
+
         if self.path != "/generate":
             self.send_error(404)
             return
