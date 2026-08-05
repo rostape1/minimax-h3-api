@@ -48,6 +48,66 @@ Grey_chicken API) assumed a `runpod/worker-comfyui`-shaped `/handler.py` to
 patch. This image has no such file — it's designed to be rented as an
 interactive Pod, not invoked as a Serverless request handler.
 
+## STATUS 2026-08-05: volume populated ✅ (steps 1-3 done)
+
+**Network volume created and loaded with models.**
+
+- Volume: `minimax_h3_models`, id **`7enri8r9gz`**, 150GB, datacenter **EUR-IS-1**
+- Mounted at `/workspace` on pods; models live at
+  `/workspace/ComfyUI_data/models/...`
+- Contents (~42GB used of 150GB):
+
+  | File | Path under `/workspace/ComfyUI_data/models/` | Size |
+  |---|---|---|
+  | diffusion | `diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors` | 20.9 GB |
+  | text encoder | `text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | 15.7 GB |
+  | video VAE | `vae/minimax_h3_video_vae_fp16.safetensors` | 5.2 GB |
+  | audio VAE | `vae/minimax_h3_audio_vae_fp32.safetensors` | 0.6 GB |
+
+- Only these 4 files were downloaded (via `download_models.sh` in this repo,
+  run over SSH on a temp pod) — **not** the stock `INSTALL_MINIMAX_H3=true`
+  installer, which pulls every variant (both `fl2va` and `ref2va` in bf16 /
+  int8 / pruned-int8, plus 3 text encoders incl. a ~64GB bf16 one) and would
+  have overflowed the 150GB volume.
+- All temp pods terminated; only volume storage is billing now (~$10.50/mo).
+
+### Gotchas hit while doing this (avoid repeating)
+
+- **OOM:** 16GB system RAM crash-loops the pod (exit 137) during HF
+  downloads. Used 24GB + `HF_XET_HIGH_PERFORMANCE=0` + `--max-workers 2`.
+  Note 32GB+ RAM was NOT available on the cheap RTX 2000 Ada in EUR-IS-1.
+- **`dockerArgs` override breaks the pod:** overriding the image's CMD skips
+  `/post_start.sh`, which is what configures and starts sshd — result was a
+  pod with no SSH and nothing running. Let the image boot normally and drive
+  it over SSH instead.
+- **SSH from the Claude Code sandbox is blocked** (outbound non-HTTP ports
+  denied), so pod shell commands must be run from the user's own terminal
+  with `!ssh ...`. RunPod API hostnames also need allowlisting
+  (`rest.runpod.io`, `api.runpod.ai`, `api.runpod.io`).
+- **RunPod API key needs `api.runpod.io/graphql` = Read/Write** for pod and
+  volume management; the default "Restricted" key only covers
+  `api.runpod.ai` (job submission) and 401s on management calls.
+- SSH key `~/.ssh/runpod_key` (passphrase-less) was created for pod access;
+  its pubkey is passed as the `PUBLIC_KEY` env var when launching pods.
+
+### Next: steps 4-5
+
+4. Wire `extra_model_paths.yaml` so ComfyUI finds models on the volume.
+   Note the image's `post_start.sh` **already writes** an
+   `extra_model_paths.yaml` covering `/workspace/ComfyUI_data` (as
+   `comfyui_workspace`) — so if the serverless container still runs
+   `post_start.sh`, this may need no change at all. Verify rather than
+   assume.
+5. Write `handler.py` + rework `Dockerfile`, build, create the serverless
+   endpoint **in EUR-IS-1** with volume `7enri8r9gz` attached.
+
+GPU for inference (still undecided, EUR-IS-1 availability):
+RTX 5090 32GB $0.99/hr · RTX PRO 6000 96GB $1.89-2.09/hr · A100 80GB $1.59/hr.
+All showed "Low" stock. VRAM need estimated 30-40GB if all resident, possibly
+24-32GB given ComfyUI's sequential offloading — untested.
+
+---
+
 ## Decision: network volume + custom Serverless handler (chosen 2026-08-05)
 
 Rejected the "bake ~60-80GB of weights into the image" path — instead, reuse
