@@ -42,8 +42,13 @@ if [ -z "${SSH_LINE:-}" ]; then
   exit 1
 fi
 
-HOST=$(echo "$SSH_LINE" | awk '{print $3}')
-PORT=$(echo "$SSH_LINE" | awk '{print $5}')
+# pod.py prints:  SSH:  ssh -i ~/.ssh/runpod_key root@<ip> -p <port>
+HOST=$(echo "$SSH_LINE" | grep -oE '[a-z]+@[0-9.]+' | head -1)
+PORT=$(echo "$SSH_LINE" | grep -oE '\-p +[0-9]+' | grep -oE '[0-9]+' | head -1)
+if [ -z "$HOST" ] || [ -z "$PORT" ]; then
+  echo "Could not parse SSH details from: $SSH_LINE" >&2
+  exit 1
+fi
 SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o LogLevel=ERROR $HOST -p $PORT"
 
 echo "Pod:  $HOST:$PORT"
