@@ -20,40 +20,36 @@ Already done, recorded here for reference:
 
 ## Usage
 
+**See [USAGE.md](USAGE.md) for the full guide** — starting, stopping,
+prompting, troubleshooting.
+
+Short version:
+
 ```bash
-# 1. Start the pod (~3-7 min to boot: image pull + ComfyUI start)
-python pod.py start
-
-# 2. Wait until ComfyUI answers
-python pod.py status
-
-# 3. Point the client at it (status prints this line)
+cd /Users/peterrostas/minimax-h3-api
+python3 pod.py start        # rent the GPU (~5 min to ready)
+python3 pod.py status       # wait for "ComfyUI is UP", copy the export line
 export COMFYUI_POD_URL=https://<pod_id>-8188.proxy.runpod.net
-
-# 4a. Generate from the CLI
-python run_job.py image.png -p "your prompt" -d 5
-
-# 4b. …or use the web UI at http://localhost:8000
-python serve.py
-
-# 5. Stop paying for the GPU when done
-python pod.py stop
+python3 serve.py            # http://localhost:8000
+# done? click "Stop pod" in the UI, or: python3 pod.py stop
 ```
 
-The pod stays warm between generations — the ~42GB model load happens once on
-the first generation, not per job. Stop the pod when you're finished; the
-volume (and its models) persists.
+The GPU bills while the pod runs (~$0.99/hr) — stop it when finished. The pod
+stays warm between generations, so the ~42GB model load happens once per
+session rather than per job.
 
 ## Scripts
 
 | File | Purpose |
 |---|---|
+| `USAGE.md` | **How to start/stop and generate — read this** |
 | `pod.py` | Start / stop / check the RunPod GPU pod |
 | `run_job.py` | CLI: one image + prompt → one video |
 | `serve.py` | Local web UI (localhost:8000) with a serial job queue |
 | `download_models.sh` | One-time model fetch onto the volume (already run) |
 | `minimax_h3_i2v_API.json` | ComfyUI workflow, API format |
 | `video_minimax_h3_i2v_UI.json` | Original ComfyUI subgraph export (reference) |
+| `NOTES.md` | Setup history and why the architecture is what it is |
 
 ## Cost
 
