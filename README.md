@@ -58,18 +58,34 @@ volume (and its models) persists.
 ## Cost
 
 - **Volume:** ~$10.50/month (150GB), always billing.
-- **GPU:** only while a pod runs. EUR-IS-1 options:
-  RTX 5090 32GB $0.99/hr · A100 80GB $1.59/hr ·
-  RTX PRO 6000 96GB $1.89-2.09/hr.
+- **GPU:** only while a pod runs. Default is the RTX 5090 at **$0.99/hr**
+  (verified sufficient). Bigger cards in EUR-IS-1 if needed:
+  A100 80GB $1.59/hr · RTX PRO 6000 96GB $2.09/hr.
 
-## Open questions (untested)
+## Measured performance (2026-08-05, RTX 5090, 5s @ 768x960)
 
-- **VRAM needed:** estimated 30-40GB if all models stay resident, possibly
-  24-32GB given ComfyUI's sequential offloading. The default GPU in `pod.py`
-  is the 96GB card to be safe; try the 32GB RTX 5090 (`--gpu "NVIDIA GeForce
-  RTX 5090"`) to cut cost roughly in half if it fits.
-- **Workflow correctness:** `minimax_h3_i2v_API.json` was hand-flattened from
-  the subgraph export and has never been run. If ComfyUI rejects it, open the
-  UI JSON in the pod's ComfyUI (port 8188) and re-export via "Save (API
-  Format)".
-- **Startup time:** ~3-7 min is an estimate, not measured.
+| Metric | Result |
+|---|---|
+| Pod boot → ComfyUI ready | ~5 min |
+| Peak VRAM | 26.3 / 33.7 GB |
+| Sampling (20 steps) | 2:29 (7.5 s/it) |
+| Total first generation | 4:47 (includes ~42GB model load) |
+| Output | 124 frames @ 24fps, H.264 + AAC audio, ~870KB |
+
+Later generations in the same session skip the model load, so expect roughly
+2.5-3 min each.
+
+## Notes
+
+- **Host driver:** the image needs CUDA ≥13.0. `pod.py` passes
+  `allowedCudaVersions: ["13.0"]` so RunPod only schedules onto hosts with a
+  new enough driver — without it you get a container that crash-loops with
+  `nvidia-container-cli: requirement error: unsatisfied condition: cuda>=13.0`.
+- **ComfyUI's own GUI** is available at the same URL for interactive prompt
+  iteration. The image also bundles official workflows (`MiniMax-H3_I2V.json`,
+  `MiniMax-H3_T2V.json`, `MiniMax-H3_R2V.json`) loadable from its workflow
+  menu.
+- **ComfyUI logs** live at `/workspace/comfyui.log` on the pod (not container
+  stdout) — `ssh ... "tail -f /workspace/comfyui.log"` to watch sampler
+  progress.
+

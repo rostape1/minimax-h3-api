@@ -25,9 +25,11 @@ DATACENTER = "EUR-IS-1"           # volume lives here; pod must match
 IMAGE = "brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130"
 POD_NAME = "minimax-h3"
 
-# EUR-IS-1 options, cheapest first. VRAM need is ~30-40GB if everything stays
-# resident, possibly less given ComfyUI's sequential offloading — untested.
-DEFAULT_GPU = "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"
+# EUR-IS-1 options. RTX 5090 (32GB) is verified sufficient: a 5s/768x960
+# generation peaked at 26.3GB of 33.7GB. Bigger cards exist if you push
+# resolution or duration: "NVIDIA A100-SXM4-80GB" ($1.59/hr),
+# "NVIDIA RTX PRO 6000 Blackwell Server Edition" (96GB, $2.09/hr).
+DEFAULT_GPU = "NVIDIA GeForce RTX 5090"
 
 KEY_FILE = os.path.expanduser("~/.runpod_key")
 SSH_PUBKEY_FILE = os.path.expanduser("~/.ssh/runpod_key.pub")
@@ -110,6 +112,7 @@ def start(gpu):
       name: "%s"
       imageName: "%s"
       ports: "8188/http,22/tcp"
+      allowedCudaVersions: ["13.0"]
       env: [{key: "PUBLIC_KEY", value: "%s"}]
     }) { id name desiredStatus } }""" % (
         gpu, DATACENTER, VOLUME_ID, POD_NAME, IMAGE, pubkey,
