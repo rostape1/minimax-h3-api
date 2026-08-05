@@ -15,17 +15,17 @@ jobs:
       - name: Pull base image
         run: docker pull brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130
 
-      - name: Inspect entrypoint/cmd/workdir
-        run: docker inspect brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130 --format '{{json .Config}}' | python3 -m json.tool
+      - name: Cat start.sh
+        run: docker run --rm --entrypoint cat brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130 /start.sh
 
-      - name: Find handler-ish files
-        run: |
-          docker run --rm --entrypoint find brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130 / -maxdepth 3 -iname "*handler*" -o -iname "*rp_*" -o -iname "start.sh" 2>/dev/null || true
+      - name: Cat post_start.sh
+        run: docker run --rm --entrypoint cat brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130 /post_start.sh
 
-      - name: Find runpod package location
+      - name: Check python/pip and key packages
         run: |
-          docker run --rm --entrypoint sh brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130 -c "pip show runpod 2>/dev/null; python3 -c 'import runpod, os; print(os.path.dirname(runpod.__file__))' 2>/dev/null" || true
-
-      - name: List root and common dirs
-        run: |
-          docker run --rm --entrypoint ls brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130 -la /
+          docker run --rm --entrypoint sh brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130 -c "
+            which python3; python3 --version;
+            /app/ComfyUI_env/bin/pip list 2>/dev/null | grep -iE 'runpod|aiohttp|comfy|boto3' || echo 'no matches in ComfyUI_env';
+            ls -la /app/ComfyUI | head -20;
+            ls /app/ComfyUI/main.py 2>&1;
+          "
