@@ -701,7 +701,7 @@ def run_job_background(job_id, prompt, image_path, duration):
         with JOBS_LOCK:
             JOBS[job_id]["status"] = "running"
         output_path = os.path.join(OUTPUT_DIR, f"{job_id}.mp4")
-        run_job.run_private_job(
+        run_job.run_pod_job(
             run_job.DEFAULT_WORKFLOW,
             image_path,
             output_path,
@@ -906,6 +906,12 @@ def free_port(port):
 
 
 def main():
+    if not run_job.POD_URL:
+        print("WARNING: COMFYUI_POD_URL is not set — jobs will fail.")
+        print("  python pod.py start && python pod.py status")
+        print("  export COMFYUI_POD_URL=https://<pod_id>-8188.proxy.runpod.net\n")
+    else:
+        print(f"ComfyUI pod: {run_job.POD_URL}")
     free_port(PORT)
     threading.Thread(target=queue_processor, daemon=True).start()
     socketserver.ThreadingTCPServer.allow_reuse_address = True

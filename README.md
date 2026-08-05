@@ -1,74 +1,75 @@
 # MiniMax H3 API
 
-RunPod serverless image-to-video pipeline using ComfyUI with MiniMax H3
-(`MiniMaxH3ImageToVideo`). Submit an image + prompt; a RunPod worker runs
-ComfyUI and uploads the resulting video (with native audio) to Cloudflare R2;
-the local client downloads it.
+Image-to-video generation using ComfyUI + MiniMax H3 on a RunPod GPU pod.
+Submit an image + prompt, get back a video with native audio.
 
 MiniMax H3 jointly generates video and stereo audio (voice, SFX, music) in a
-single forward pass, up to ~15s at up to 2K/24fps. This pipeline runs its
-**image-to-video** task specifically (first-frame in, video+audio out).
+single forward pass, up to ~15s at 24fps.
 
-## Setup
+**Separate from the `Grey_chicken API` project** (LTX-Video pipeline) — own
+repo, own RunPod volume, own scripts. Nothing shared.
+
+## Setup (one time)
+
+Already done, recorded here for reference:
+
+- Network volume `minimax_h3_models` (`7enri8r9gz`), 150GB, **EUR-IS-1**,
+  preloaded with ~42GB of model weights (see `NOTES.md`).
+- RunPod API key in `~/.runpod_key` (needs `api.runpod.io/graphql` Read/Write).
+- Passphrase-less SSH key at `~/.ssh/runpod_key` for pod shell access.
+
+## Usage
 
 ```bash
-export RUNPOD_API_KEY=...
-export RUNPOD_ENDPOINT_ID=...
-```
+# 1. Start the pod (~3-7 min to boot: image pull + ComfyUI start)
+python pod.py start
 
-## Running locally
+# 2. Wait until ComfyUI answers
+python pod.py status
 
-```bash
-# CLI
-python run_job.py path/to/image.png -p "your prompt" -d 5 [-o output.mp4]
+# 3. Point the client at it (status prints this line)
+export COMFYUI_POD_URL=https://<pod_id>-8188.proxy.runpod.net
 
-# Web UI (http://localhost:8000)
+# 4a. Generate from the CLI
+python run_job.py image.png -p "your prompt" -d 5
+
+# 4b. …or use the web UI at http://localhost:8000
 python serve.py
+
+# 5. Stop paying for the GPU when done
+python pod.py stop
 ```
 
-## Architecture
+The pod stays warm between generations — the ~42GB model load happens once on
+the first generation, not per job. Stop the pod when you're finished; the
+volume (and its models) persists.
 
-- `run_job.py` — CLI client. Loads `minimax_h3_i2v_API.json`, patches in the
-  input image, prompt, computed width/height (fit to H3's 768px-short-edge
-  canvas from the image's aspect ratio), and frame length (from `--duration`
-  seconds, snapped to H3's 17-frame-per-block grid at 24fps). Sends to RunPod
-  `/run`, polls `/status`, downloads the video.
-- `serve.py` — stdlib web server wrapping `run_job.run_private_job()`. Same
-  serial job-queue pattern as the sibling LTX pipeline (Grey_chicken API).
-- `Dockerfile` / `patch_handler.py` — builds on
-  `brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130` (models baked in) and
-  patches its `/handler.py` so R2 uploads honor `BUCKET_NAME`.
+## Scripts
 
-## RunPod endpoint env vars required
+| File | Purpose |
+|---|---|
+| `pod.py` | Start / stop / check the RunPod GPU pod |
+| `run_job.py` | CLI: one image + prompt → one video |
+| `serve.py` | Local web UI (localhost:8000) with a serial job queue |
+| `download_models.sh` | One-time model fetch onto the volume (already run) |
+| `minimax_h3_i2v_API.json` | ComfyUI workflow, API format |
+| `video_minimax_h3_i2v_UI.json` | Original ComfyUI subgraph export (reference) |
 
-Reuses the same Cloudflare R2 bucket as the Grey_chicken API pipeline:
+## Cost
 
-| Var | Purpose |
-|-----|---------|
-| `BUCKET_NAME` | R2 bucket name |
-| `BUCKET_ENDPOINT_URL` | `https://<account_id>.r2.cloudflarestorage.com` |
-| `BUCKET_ACCESS_KEY_ID` | R2 API token key ID |
-| `BUCKET_SECRET_ACCESS_KEY` | R2 API token secret |
+- **Volume:** ~$10.50/month (150GB), always billing.
+- **GPU:** only while a pod runs. EUR-IS-1 options:
+  RTX 5090 32GB $0.99/hr · A100 80GB $1.59/hr ·
+  RTX PRO 6000 96GB $1.89-2.09/hr.
 
-## Known unknowns (verify on first real deploy)
+## Open questions (untested)
 
-- **`patch_handler.py` markers**: written defensively against the assumption
-  that this image forks `runpod/worker-comfyui`'s `handler.py`. The
-  `bucket_name` patch will hard-fail the build with a clear message if that's
-  wrong; the optional `gifs`→`images` alias just gets skipped.
-- **`minimax_h3_i2v_API.json`**: hand-flattened from the ComfyUI subgraph
-  export (`video_minimax_h3_i2v_UI.json`, kept alongside for reference) since
-  subgraphs aren't valid in RunPod's API-format submission. Node wiring was
-  cross-checked against the UI JSON's `links` array, but two widget values
-  couldn't be fully confirmed statically: `CreateVideo` (node `91`) only sets
-  `fps`; a second widget value in the source (`8`) has no confirmed meaning
-  and was dropped. If a real job fails at node `91` or `92`, open this
-  workflow in an actual ComfyUI instance and use "Save (API Format)" to get
-  a verified export, then diff against this file.
-- **Not yet created**: the RunPod serverless endpoint itself. Deploy the
-  image built from this repo's `Dockerfile`, then set `RUNPOD_ENDPOINT_ID`.
-
-## Deploying a new Docker image
-
-Build and push `Dockerfile` to your registry, then update the container image
-in the RunPod endpoint settings.
+- **VRAM needed:** estimated 30-40GB if all models stay resident, possibly
+  24-32GB given ComfyUI's sequential offloading. The default GPU in `pod.py`
+  is the 96GB card to be safe; try the 32GB RTX 5090 (`--gpu "NVIDIA GeForce
+  RTX 5090"`) to cut cost roughly in half if it fits.
+- **Workflow correctness:** `minimax_h3_i2v_API.json` was hand-flattened from
+  the subgraph export and has never been run. If ComfyUI rejects it, open the
+  UI JSON in the pod's ComfyUI (port 8188) and re-export via "Save (API
+  Format)".
+- **Startup time:** ~3-7 min is an estimate, not measured.

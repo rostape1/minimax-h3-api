@@ -4,87 +4,85 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-RunPod serverless image-to-video pipeline using ComfyUI with MiniMax H3
-(`MiniMaxH3ImageToVideo` node, from the `10Eros`-adjacent template image
-`brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130`). The user submits an
-image + prompt; a RunPod worker runs ComfyUI and uploads the resulting
-video+audio to Cloudflare R2; the local client downloads it. Sibling project
-to `Grey_chicken API` (the LTX-Video I2V pipeline) — same shape, different
-model/workflow, separate repo and RunPod endpoint.
+Image-to-video generation using ComfyUI + MiniMax H3 on a **RunPod Pod**
+(not serverless). The user starts a GPU pod, ComfyUI boots with models
+already present on an attached network volume, and the local client talks to
+ComfyUI's HTTP API directly on port 8188.
 
-## Running locally
+**This is a separate project from `Grey_chicken API`** (the LTX-Video
+serverless pipeline). They share no code, no endpoint, and no volume. Some
+patterns were copied over (the queue web UI, ComfyUI history polling), but
+the projects are independent — don't cross-wire them.
 
-```bash
-export RUNPOD_API_KEY=...
-export RUNPOD_ENDPOINT_ID=...
+## Architecture
 
-# CLI
-python run_job.py path/to/image.png -p "your prompt" -d 5 [-o output.mp4]
+Three scripts, each with one responsibility:
 
-# Web UI (http://localhost:8000)
-python serve.py
-```
+- `pod.py` — RunPod GraphQL client. `start` / `stop` / `status` for the GPU
+  pod. Hardcodes the volume id, datacenter, and image; reads the API key from
+  `$RUNPOD_API_KEY` or `~/.runpod_key`.
+- `run_job.py` — Generation client. Patches the workflow JSON, uploads the
+  image to ComfyUI (`POST /upload/image`), queues it (`POST /prompt`), polls
+  `GET /history/{id}`, downloads via `GET /view`. Requires
+  `$COMFYUI_POD_URL`.
+- `serve.py` — stdlib web server wrapping `run_job.run_pod_job()`. Serial
+  job queue on a single background thread; browser polls `/queue_list`.
+  Logs submissions to `prompts.csv`.
 
-## Key architecture
+### Why Pods, not serverless
 
-### Local side
-- `run_job.py` — CLI client. Loads `minimax_h3_i2v_API.json` (flat API-format
-  dict keyed by node id), patches in the input image (node `114`), prompt/
-  width/height/length (node `104`, `MiniMaxH3ImageToVideo`), and optionally a
-  fixed seed (node `15`, `RandomNoise`). Sends to RunPod `/run`, polls
-  `/status`/`/stream`, downloads the video via `extract_video_bytes()`.
-- `serve.py` — Single-file stdlib web server wrapping
-  `run_job.run_private_job()`. Each job runs on a background thread via a
-  single-consumer queue (serial execution). Browser polls `/queue_list` every
-  5s. Logs each submission to `prompts.csv`.
+The base image (`brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130`) is a
+RunPod **Pod** template — no `/handler.py`, no `runpod` package, `CMD` is
+`/post_start.sh`, exposes ports 22 and 8188. Making it serverless would mean
+writing a ComfyUI-wrapping handler from scratch. Since the expected usage is
+interactive batches (start pod → generate several → stop), a warm pod is both
+simpler and cheaper: the ~42GB model load is paid once per session instead of
+on every serverless cold start. See `NOTES.md` for the full investigation.
 
-### Docker image (RunPod worker)
-- Base: `brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130` — a prebuilt image
-  with MiniMax H3's models already baked in (no network volume, no custom
-  node installs needed).
-- `patch_handler.py` runs at build time and patches `/handler.py`, assumed to
-  be a `runpod/worker-comfyui` fork: passes
-  `bucket_name=os.environ.get("BUCKET_NAME")` to `rp_upload.upload_image` so
-  videos go to R2 instead of the default month-year bucket. This patch is
-  required — the build fails loudly if the expected marker isn't found. A
-  second, optional patch (aliasing a `gifs` output key to `images`) is
-  skipped rather than failing if unneeded — `SaveVideo` is a core ComfyUI
-  node, unlikely to need it like `VHS_VideoCombine` does.
+### Infrastructure (already provisioned)
 
-### Workflow
+- Network volume `minimax_h3_models`, id `7enri8r9gz`, 150GB, **EUR-IS-1**.
+  Mounted at `/workspace`; models at `/workspace/ComfyUI_data/models/`.
+  The pod must launch in EUR-IS-1 — volumes can't cross datacenters.
+- The image's `post_start.sh` writes an `extra_model_paths.yaml` that already
+  covers `/workspace/ComfyUI_data` (as `comfyui_workspace`), so ComfyUI finds
+  the volume's models with no extra config.
 
-`minimax_h3_i2v_API.json` is hand-flattened from `video_minimax_h3_i2v_UI.json`
-(the ComfyUI subgraph export, kept for reference — subgraphs aren't valid in
-RunPod's API-format `/run` submission). Node map:
+## Workflow node map
 
-- `114` `LoadImage` — first_frame, patched with the uploaded image's filename
+`minimax_h3_i2v_API.json`, hand-flattened from `video_minimax_h3_i2v_UI.json`
+(ComfyUI subgraph exports aren't valid API-format input):
+
+- `114` `LoadImage` — first frame; patched with the uploaded filename
 - `104` `MiniMaxH3ImageToVideo` — prompt / width / height / length, all
-  patched by `run_job.py`. Width/height are computed from the input image's
-  aspect ratio (768px short edge, capped at 1344px long edge, multiple of
-  32 — H3's native canvas) rather than ComfyUI's `ResolutionSelector` node
-  (dropped; it defaulted to a fixed "1:1 Square" regardless of input aspect).
-  Length is computed from `--duration` seconds via
-  `max(5, round(duration*24))` snapped up to the nearest `17k+5` frame count.
-- `15` `RandomNoise` — noise_seed, patched only if `--seed` is passed
-  (otherwise uses the workflow's baked-in default)
-- `6`/`13`/`11`/`24` — model/CLIP/VAE loaders (video + audio VAE), static
-- `91` `CreateVideo` / `92` `SaveVideo` — muxes decoded frames + audio into
-  an mp4; unverified against a real ComfyUI export (see README "Known
-  unknowns")
+  patched by `run_job.py`. Width/height are computed in Python from the input
+  image's aspect ratio (768px short edge, 1344 cap, multiple of 32 — H3's
+  native canvas), replacing the UI's `ResolutionSelector` which defaulted to
+  a fixed 1:1. Length is computed from `--duration` seconds and snapped up to
+  the nearest `17k+5` frame count.
+- `15` `RandomNoise` — noise_seed; patched only when `--seed` is passed
+- `6`/`13`/`11`/`24` — UNet / CLIP / video VAE / audio VAE loaders, static
+- `91` `CreateVideo` / `92` `SaveVideo` — mux frames + audio to mp4
 
-Nodes dropped from the UI export as dead/unnecessary: `115`
-(`ResolutionSelector`, replaced by Python-computed dims), `107`/`111`
-(`ComfyMathExpression`/`PrimitiveFloat`, replaced by Python-computed frame
-length), `116`-`120` (markdown notes and a disconnected image-size
-demo group).
+Dropped from the UI export: `115` (`ResolutionSelector`), `107`/`111`
+(math nodes for frame length — both now computed in Python), `116`-`120`
+(markdown notes and a disconnected demo group).
 
-### R2 / storage
-Reuses the same Cloudflare R2 bucket/credentials as the `Grey_chicken API`
-pipeline (see its `BUCKET_NAME` / `BUCKET_ENDPOINT_URL` / `BUCKET_ACCESS_KEY_ID`
-/ `BUCKET_SECRET_ACCESS_KEY` env vars) — just a different RunPod endpoint.
+**Unverified:** this JSON has never been run. Node `91`'s widget values in
+particular are a guess (the UI export had a second value, `8`, with no
+confirmed meaning — dropped). If ComfyUI rejects the workflow, load the UI
+JSON in the running pod's ComfyUI and re-export with "Save (API Format)".
 
-## Deploying a new Docker image
+## Gotchas
 
-Build `Dockerfile`, push to your registry, update the container image in the
-RunPod endpoint settings. No CI is wired up yet (unlike `Grey_chicken API`'s
-GitHub Actions build).
+- **Never override the image's `CMD`/`dockerArgs`** — `/post_start.sh` is what
+  starts sshd and keeps the container alive. Overriding it yields a pod with
+  no SSH and nothing running.
+- **Pod needs ≥24GB system RAM.** 16GB OOM-crash-loops (exit 137) during
+  heavy I/O.
+- **SSH is blocked from the Claude Code sandbox** (outbound non-HTTP ports).
+  Pod shell commands must be run from the user's own terminal via `!ssh ...`.
+- **`urllib` gets 403 through the sandbox proxy** — use `requests` in scripts
+  here.
+- RunPod API hostnames need sandbox allowlisting: `api.runpod.io`,
+  `rest.runpod.io`, `api.runpod.ai`.
