@@ -1,0 +1,18 @@
+# Runtime / user data — never commit
+*.mp4
+*.png
+*.jpg
+*.jpeg
+!video_minimax_h3_i2v_UI.json
+my_input_image.*
+private_generated_video.*
+generated/
+prompts.csv
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
