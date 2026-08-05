@@ -67,12 +67,23 @@ LOG=/workspace/dl_$TAG.log
 
 echo "Starting download in background on the pod..."
 $SSH "nohup bash -c '
+  export PATH=/app/ComfyUI_env/bin:\$PATH
   export HF_HOME=/workspace/.hf/home HF_XET_HIGH_PERFORMANCE=0
   mkdir -p $DEST_DIR
-  hf download $REPO $SRC --repo-type model --local-dir $STAGE --max-workers 2 &&
-  mv $STAGE/$SRC $DEST_DIR/ &&
-  rm -rf $STAGE &&
-  echo MODEL_DOWNLOAD_DONE
+  python3 -m pip -q install -U huggingface_hub 2>&1 | tail -2
+  python3 - <<PYEOF
+from huggingface_hub import hf_hub_download
+import shutil
+p = hf_hub_download(
+    repo_id="$REPO",
+    filename="$SRC",
+    repo_type="model",
+    local_dir="$STAGE",
+)
+shutil.move(p, "$DEST_DIR/$FNAME")
+print("MODEL_DOWNLOAD_DONE")
+PYEOF
+  rm -rf $STAGE
 ' > $LOG 2>&1 & echo ok" > /dev/null
 
 # --- follow along ---------------------------------------------------------
@@ -92,7 +103,7 @@ while true; do
     $SSH "tail -20 $LOG" >&2
     exit 1
   fi
-  SZ=$($SSH "du -sh $STAGE 2>/dev/null | cut -f1" || echo "?")
-  printf "\r  staged: %-10s" "${SZ:-0}"
+  SZ=$($SSH "du -sh $STAGE 2>/dev/null | cut -f1; du -sh $DEST_DIR/$FNAME 2>/dev/null | cut -f1" 2>/dev/null | tr '\n' ' ' || echo "?")
+  printf "\r  downloading: %-24s" "${SZ:-0}"
   sleep 15
 done
