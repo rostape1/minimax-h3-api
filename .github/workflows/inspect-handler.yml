@@ -15,8 +15,17 @@ jobs:
       - name: Pull base image
         run: docker pull brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130
 
-      - name: Dump /handler.py
-        run: docker run --rm --entrypoint cat brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130 /handler.py
+      - name: Inspect entrypoint/cmd/workdir
+        run: docker inspect brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130 --format '{{json .Config}}' | python3 -m json.tool
 
-      - name: Find rp_upload usage
-        run: docker run --rm --entrypoint grep brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130 -n "rp_upload\|images\|gifs" /handler.py
+      - name: Find handler-ish files
+        run: |
+          docker run --rm --entrypoint find brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130 / -maxdepth 3 -iname "*handler*" -o -iname "*rp_*" -o -iname "start.sh" 2>/dev/null || true
+
+      - name: Find runpod package location
+        run: |
+          docker run --rm --entrypoint sh brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130 -c "pip show runpod 2>/dev/null; python3 -c 'import runpod, os; print(os.path.dirname(runpod.__file__))' 2>/dev/null" || true
+
+      - name: List root and common dirs
+        run: |
+          docker run --rm --entrypoint ls brunorovoletto/minimax-h3-ltx-2.3-comfyui:cuda130 -la /
