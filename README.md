@@ -47,6 +47,7 @@ session rather than per job.
 | `run_job.py` | CLI: one image + prompt → one video |
 | `serve.py` | Local web UI (localhost:8000) with a serial job queue |
 | `download_models.sh` | One-time model fetch onto the volume (already run) |
+| `add_model.sh` | Add another MiniMax H3 model to the volume (e.g. `./add_model.sh ref2va`) |
 | `minimax_h3_i2v_API.json` | ComfyUI workflow, API format |
 | `video_minimax_h3_i2v_UI.json` | Original ComfyUI subgraph export (reference) |
 | `NOTES.md` | Setup history and why the architecture is what it is |

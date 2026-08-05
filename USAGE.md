@@ -149,6 +149,45 @@ motion from there.
 
 ---
 
+## Adding more models
+
+The volume only holds the models needed for **I2V** (first/last-frame to
+video). ComfyUI ships other MiniMax H3 workflows that need different weights —
+open one and you'll see a red-highlighted "Load Diffusion Model" node if its
+model is missing.
+
+| Workflow tab | Needs | Installed? |
+|---|---|---|
+| `MiniMax-H3_I2V` | `minimax_h3_fl2va_pruned_int8_convrot` | yes |
+| `MiniMax-H3_T2V` | same `fl2va` model (no image inputs connected) | yes |
+| `MiniMax-H3_R2V` | `minimax_h3_ref2va_pruned_int8_convrot` | no — see below |
+
+With the pod running:
+
+```bash
+./add_model.sh ref2va      # ~21GB, reference-to-video
+```
+
+It downloads on the pod straight onto the volume (so it's there for every
+future session), shows progress, and skips if already installed. Ctrl-C only
+stops the watching — the download keeps going on the pod.
+
+Any other file from the `Comfy-Org/MiniMax-H3` repo works too:
+
+```bash
+./add_model.sh diffusion_models/minimax_h3_fl2va_bf16.safetensors
+```
+
+After it lands, **refresh the ComfyUI tab** so the model dropdown re-reads the
+directory.
+
+**fl2va vs ref2va:** `fl2va` animates *from* your image as the first frame
+(what this project's pipeline uses). `ref2va` takes reference images/video/
+audio and generates new footage matching them, rather than starting from the
+frame.
+
+---
+
 ## What it costs
 
 | | Rate | When |
